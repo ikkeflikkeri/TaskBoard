@@ -147,6 +147,83 @@ connection, so a database that is merely unreachable cannot crash the
 process. Use `/health/live` as the liveness signal and `/health/ready` as
 the readiness signal.
 
+## Error contract
+
+Every error the API returns is `application/problem+json` (RFC 9457), so a
+client can read one media type and one set of members regardless of which
+layer rejected the request.
+
+| Status | When | Body |
+|---|---|---|
+| 400 | A field failed validation, or the request envelope could not be read | Problem Details with an `errors` map |
+| 404 | The task does not exist, or the path matches no endpoint | Problem Details |
+| 405 | The path exists but not for that HTTP method | Problem Details |
+| 409 | `version` does not match the stored task | Problem Details |
+| 415 | `Content-Type` is not `application/json` | Problem Details |
+| 500 | An unhandled exception | Problem Details, no diagnostic detail |
+
+Successful responses are `application/json` and are unaffected by any of
+this.
+
+### Validation errors
+
+All 400 responses carry an `errors` map from a field name to a list of
+messages, including the title a handler-produced problem uses:
+
+```json
+{
+  "type": "https://tools.ietf.org/html/rfc9110#section-15.5.1",
+  "title": "One or more validation errors occurred.",
+  "status": 400,
+  "errors": { "title": ["Must contain 1–200 characters after trimming."] },
+  "traceId": "00-ae55ff7ae22add5e747f3a1bd39a46dc-a3990d1c79e23adf-00"
+}
+```
+
+The key tells you how the request was rejected:
+
+- A **field name** such as `title`, `version`, `pageSize`, or `cursor` means
+  the envelope was read successfully and that field was invalid.
+- The key **`request`** means the body could not be deserialized at all:
+  malformed JSON, an empty body, a JSON array instead of an object, or a value
+  of the wrong type. No field name is given because the framework does not
+  report which one it failed on.
+
+Treat `errors.request` as "the body is wrong somewhere, and here is the
+message" rather than as a pointer to one field.
+
+### Errors that carry no detail
+
+404 and 500 responses describe the failure without reproducing it, and carry no
+`errors` map — there is no field to correct.
+
+```json
+{
+  "type": "https://tools.ietf.org/html/rfc9110#section-15.5.5",
+  "title": "Not Found",
+  "status": 404,
+  "traceId": "00-f95c50a9dd1f65f7e0bbd7c428be5217-03c68ccedff4c05d-00"
+}
+```
+
+A 404 does not distinguish a missing task from an unknown path. If you need to
+tell them apart, check the path rather than the body.
+
+A 500 never includes an exception message, stack trace, handler path,
+connection string, or database error text, in any environment including
+`Development`; that detail goes to the log. This is deliberate: an unhandled
+exception here is usually a database failure whose message can carry a
+connection string.
+
+Read logs to diagnose a 500. Correlate using the `traceId` in the response
+body.
+
+### Health endpoints
+
+`/health/live` and `/health/ready` do not return Problem Details. They
+return `Healthy` or `Unhealthy` as plain text, with `/health/ready` returning
+503 when unhealthy.
+
 ## Build and test
 
 ```powershell
