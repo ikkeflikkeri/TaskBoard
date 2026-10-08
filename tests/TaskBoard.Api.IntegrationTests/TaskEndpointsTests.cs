@@ -207,4 +207,86 @@ public sealed class TaskEndpointsTests
         Assert.NotNull(persisted);
         Assert.Equal(created, persisted);
     }
+
+    [Fact]
+    public async Task Get_returns_not_found_for_a_missing_task()
+    {
+        using var client = _fixture.Factory.CreateClient();
+
+        using var response = await client.GetAsync(
+            $"/api/tasks/{Guid.CreateVersion7()}");
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Update_returns_not_found_for_a_missing_task()
+    {
+        using var client = _fixture.Factory.CreateClient();
+
+        // Valid input ensures we reach the missing-task branch,
+        // rather than failing validation first.
+        using var response = await client.PutAsJsonAsync(
+            $"/api/tasks/{Guid.CreateVersion7()}",
+            new UpdateTaskRequest(
+                "Valid title",
+                true,
+                1));
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(200)]
+    public async Task Update_accepts_title_length_boundaries_after_trimming(
+        int titleLength)
+    {
+        using var client = _fixture.Factory.CreateClient();
+
+        using var createResponse = await client.PostAsJsonAsync(
+            "/api/tasks/",
+            new CreateTaskRequest("Original"));
+
+        Assert.Equal(HttpStatusCode.Created, createResponse.StatusCode);
+
+        var created = await createResponse.Content
+            .ReadFromJsonAsync<TaskResponse>();
+
+        Assert.NotNull(created);
+
+        var expectedTitle = new string('x', titleLength);
+        var uri = $"/api/tasks/{created.Id}";
+
+        // Padded so the pre-trim length exceeds 200 even for the
+        // largest accepted title.
+        using var updateResponse = await client.PutAsJsonAsync(
+            uri,
+            new UpdateTaskRequest(
+                $" \t{expectedTitle}\r\n ",
+                true,
+                created.Version));
+
+        Assert.Equal(HttpStatusCode.OK, updateResponse.StatusCode);
+
+        var updated = await updateResponse.Content
+            .ReadFromJsonAsync<TaskResponse>();
+
+        Assert.NotNull(updated);
+
+        var expected = created with
+        {
+            Title = expectedTitle,
+            IsCompleted = true,
+            Version = created.Version + 1
+        };
+
+        Assert.Equal(expected, updated);
+
+        // Verify through a separate HTTP request, not just the PUT response.
+        var persisted = await client.GetFromJsonAsync<TaskResponse>(uri);
+
+        Assert.NotNull(persisted);
+        Assert.Equal(expected, persisted);
+    }
 }
