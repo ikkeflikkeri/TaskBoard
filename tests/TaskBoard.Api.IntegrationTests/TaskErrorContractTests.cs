@@ -11,17 +11,6 @@ using Xunit;
 
 namespace TaskBoard.Api.IntegrationTests;
 
-/// <summary>
-/// The shape of every error the API returns, observed over HTTP.
-/// </summary>
-/// <remarks>
-/// The point of these tests is that a client can parse an error the same way
-/// regardless of which layer rejected the request. Handler validation and a
-/// malformed request envelope are the two paths most likely to drift apart,
-/// so they are asserted against each other rather than against literals.
-/// Existing success, validation, and concurrency tests in
-/// <see cref="TaskEndpointsTests"/> are not duplicated here.
-/// </remarks>
 public sealed class TaskErrorContractTests
     : IClassFixture<TaskBoardFixture>
 {
@@ -48,8 +37,6 @@ public sealed class TaskErrorContractTests
 
         Assert.Equal(ProblemJson, response.Content.Headers.ContentType?.MediaType);
 
-        // A body a client can act on: this is what the ticket calls for,
-        // replacing the bare Results.NotFound() empty payload.
         Assert.Equal(404, problem.RootElement.GetProperty("status").GetInt32());
         Assert.False(string.IsNullOrWhiteSpace(
             problem.RootElement.GetProperty("title").GetString()));
@@ -60,8 +47,6 @@ public sealed class TaskErrorContractTests
     {
         using var client = _fixture.Factory.CreateClient();
 
-        // Valid input so the request reaches the missing-task branch
-        // rather than failing validation first.
         using var response = await client.PutAsJsonAsync(
             $"/api/tasks/{Guid.CreateVersion7()}",
             new UpdateTaskRequest("Valid title", true, 1));
@@ -108,9 +93,6 @@ public sealed class TaskErrorContractTests
 
         Assert.Equal(400, root.GetProperty("status").GetInt32());
 
-        // The envelope itself could not be read, so no field name is
-        // truthful here. The key is documented as generic rather than
-        // guessing at 'title' or 'version'.
         var errors = root.GetProperty("errors");
         var messages = errors.GetProperty("request");
 
@@ -136,10 +118,6 @@ public sealed class TaskErrorContractTests
 
         var root = (await ReadProblemAsync(response)).RootElement;
 
-        // The README promises a traceId on every problem body and points at
-        // it as the way to correlate a response with the log. Normalizing this
-        // 400 into a new instance must not drop the extension the default
-        // writer had already added.
         Assert.True(
             root.TryGetProperty("traceId", out var traceId),
             "A binding failure lost its traceId, so it cannot be correlated "
@@ -153,8 +131,6 @@ public sealed class TaskErrorContractTests
     {
         using var client = _fixture.Factory.CreateClient();
 
-        // A GET with no body at all: pageSize binds as int?, so "abc" fails
-        // at the binder and produces a bare 400 with no errors map.
         using var response = await client.GetAsync("/api/tasks/?pageSize=abc");
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
@@ -163,9 +139,6 @@ public sealed class TaskErrorContractTests
         var errors = (await ReadProblemAsync(response))
             .RootElement.GetProperty("errors");
 
-        // The README's rule: a field name means the request was read fine and
-        // that field was invalid. Here the field is in the query string, so
-        // the client is told exactly which parameter to fix.
         Assert.True(
             errors.TryGetProperty("pageSize", out var messages),
             "A bad query parameter is not keyed by its field name, so the "
@@ -174,8 +147,6 @@ public sealed class TaskErrorContractTests
 
         Assert.Equal(JsonValueKind.Array, messages.ValueKind);
 
-        // There is no body here, so the message must not tell the client to
-        // send one — that is the part that is actively misleading.
         Assert.DoesNotContain(
             "JSON",
             string.Join(" ", messages.EnumerateArray().Select(m => m.GetString())),
@@ -206,9 +177,6 @@ public sealed class TaskErrorContractTests
         var errors = (await ReadProblemAsync(response))
             .RootElement.GetProperty("errors");
 
-        // Each of these failed at the binder, so each is the field's fault.
-        // Falling back to errors.request here would tell a client with no
-        // body to send one.
         Assert.True(
             errors.TryGetProperty("pageSize", out var messages),
             $"pageSize={value} ({why}) was not keyed by its field name.");
@@ -219,8 +187,6 @@ public sealed class TaskErrorContractTests
     {
         using var client = _fixture.Factory.CreateClient();
 
-        // pageSize is a single int?, not a collection, so two values have no
-        // one value to bind.
         using var response = await client.GetAsync(
             "/api/tasks/?pageSize=2&pageSize=3");
 
@@ -234,8 +200,6 @@ public sealed class TaskErrorContractTests
             "A repeated scalar parameter is a field error, not an unreadable "
             + "body.");
 
-        // The message has to name the cause; "send a JSON object" would be
-        // nonsense for a query string.
         Assert.Contains(
             "once",
             string.Join(
@@ -248,8 +212,6 @@ public sealed class TaskErrorContractTests
     {
         using var client = _fixture.Factory.CreateClient();
 
-        // -1 binds successfully as an int, so this is handler validation and
-        // must keep the handler's wording rather than the binder's.
         using var response = await client.GetAsync(
             "/api/tasks/?pageSize=-1");
 
@@ -283,11 +245,6 @@ public sealed class TaskErrorContractTests
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
 
-        // The README promises application/problem+json for every error. The
-        // framework's own writer declines when Accept excludes that media
-        // type and the status-code pages fall back to plain text, which would
-        // hand the client a body it cannot parse with the documented code
-        // path.
         Assert.Equal(ProblemJson, response.Content.Headers.ContentType?.MediaType);
 
         var problem = await ReadProblemAsync(response);
@@ -320,9 +277,6 @@ public sealed class TaskErrorContractTests
         var fromValidation = await ReadProblemAsync(validation);
         var fromBinding = await ReadProblemAsync(malformed);
 
-        // A client can read either response with one code path: the same
-        // media type, the same members, and an errors map in both. Only the
-        // keys inside errors differ, which the README explains.
         foreach (var property in new[] { "type", "title", "status", "errors" })
         {
             Assert.True(
@@ -340,12 +294,17 @@ public sealed class TaskErrorContractTests
             fromBinding.RootElement.GetProperty("title").GetString());
     }
 
-    [Fact]
-    public async Task An_unhandled_exception_does_not_expose_internals()
+    [Theory]
+    [InlineData("application/json")]
+    [InlineData("text/html")]
+    [InlineData("application/xml")]
+    public async Task An_unhandled_exception_does_not_expose_internals(string accept)
     {
         using var factory = ThrowingEndpointFactory.Start();
 
         using var client = factory.CreateClient();
+
+        client.DefaultRequestHeaders.TryAddWithoutValidation("Accept", accept);
 
         using var response = await client.GetAsync("/throw-sensitive-detail");
 
@@ -354,14 +313,6 @@ public sealed class TaskErrorContractTests
 
         var body = await response.Content.ReadAsStringAsync();
 
-        // What a developer would write into a bug report, and anything that
-        // could carry a credential, must never reach the wire.
-        //
-        // Verified non-vacuous: re-pointing Program.cs at the
-        // argument-taking UseExceptionHandler(ExceptionHandlerOptions)
-        // overload makes all five assertions below fail, because that
-        // overload writes the message, stack trace, and handler path into
-        // the body. The no-argument overload does not.
         Assert.DoesNotContain(ThrowingEndpointFactory.Secret, body);
         Assert.DoesNotContain("InvalidOperationException: ", body);
         Assert.DoesNotContain("   at ", body, StringComparison.Ordinal);
@@ -390,7 +341,6 @@ public sealed class TaskErrorContractTests
 
         var uri = $"/api/tasks/{created.Id}";
 
-        // Take the task to version 2 so the next update is genuinely stale.
         using var first = await client.PutAsJsonAsync(
             uri,
             new UpdateTaskRequest("Accepted edit", true, created.Version));
@@ -410,7 +360,6 @@ public sealed class TaskErrorContractTests
         Assert.False(string.IsNullOrWhiteSpace(
             problem.RootElement.GetProperty("detail").GetString()));
 
-        // A conflict is not a field error, so it carries no errors map.
         Assert.False(problem.RootElement.TryGetProperty("errors", out _));
     }
 
@@ -419,7 +368,6 @@ public sealed class TaskErrorContractTests
     {
         using var client = _fixture.Factory.CreateClient();
 
-        // The path exists, but not for DELETE.
         using var response = await client.DeleteAsync(
             $"/api/tasks/{Guid.CreateVersion7()}");
 

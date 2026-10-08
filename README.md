@@ -188,7 +188,7 @@ messages, including the title a handler-produced problem uses:
 The key tells you how the request was rejected:
 
 - A **field name** such as `title`, `version`, `pageSize`, or `cursor` means
-  that parameter was rejected and the rest of the request is well-formed.
+  that parameter was rejected. Other values may still need correction.
 - The key **`request`** means the body could not be deserialized at all:
   malformed JSON, an empty body, a JSON array instead of an object, or a value
   of the wrong type. No field name is given because the framework does not
