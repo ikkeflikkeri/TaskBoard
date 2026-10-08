@@ -1,0 +1,22 @@
+name: taskboard
+
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: taskboard
+      POSTGRES_USER: taskboard_dev
+      POSTGRES_PASSWORD: ${TASKBOARD_DB_PASSWORD:?Set TASKBOARD_DB_PASSWORD}
+    ports:
+      - "127.0.0.1:54320:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U taskboard_dev -d taskboard"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  postgres-data:
