@@ -2,6 +2,9 @@ name: CI
 
 on:
   push:
+    # Feature branches are tested by the pull_request trigger.
+    # Leaving push unscoped runs the same suite twice per push.
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
