@@ -18,7 +18,7 @@ Run these commands from the repository root.
 
 ```powershell
 dotnet tool restore
-dotnet restore .\TaskBoard.slnx
+dotnet restore .\TaskBoard.slnx --locked-mode
 ```
 
 ### 2. Configure the local database connection
@@ -107,7 +107,11 @@ the task schema exists.
 ## Build and test
 
 ```powershell
-dotnet build .\TaskBoard.slnx --configuration Release
+dotnet restore .\TaskBoard.slnx --locked-mode
+
+dotnet build .\TaskBoard.slnx `
+    --configuration Release `
+    --no-restore
 
 dotnet test .\TaskBoard.slnx `
     --configuration Release `
@@ -117,6 +121,28 @@ dotnet test .\TaskBoard.slnx `
 
 Integration tests create their own PostgreSQL containers. They do not
 use the database started by Compose. Docker must be running.
+
+## Intentional dependency changes
+
+Package lock files are committed. Normal verification uses locked restore.
+
+When intentionally changing a package reference:
+
+1. Edit the package version in the relevant project file.
+2. Regenerate lock files:
+
+   ```powershell
+   dotnet restore .\TaskBoard.slnx --force-evaluate
+   ```
+
+3. Review the project and lock-file changes.
+4. Run locked restore, build, tests, and the model-drift check.
+5. Commit the package-reference changes and affected lock files together.
+
+Do not regenerate lock files merely to bypass a locked-restore failure.
+
+NuGet provides `--force-evaluate` to reevaluate dependencies when
+deliberately updating lock files.
 
 ## Check for model changes without a migration
 
