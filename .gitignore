@@ -488,3 +488,9 @@ $RECYCLE.BIN/
 
 # Test output
 **/TestResults/
+
+# Installed agent skills, restored by the skills tooling. `skills-lock.json`
+# is committed so the exact versions are reproducible.
+.agents/
+.claude/
+agent/
