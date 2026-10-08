@@ -205,6 +205,51 @@ public sealed class TaskPaginationTests
         Assert.Null(second.NextCursor);
     }
 
+    [Fact]
+    public async Task Deleting_the_cursor_row_does_not_skip_remaining_tasks()
+    {
+        var tasks = await SeedAsync(4);
+
+        using var client = _fixture.Factory.CreateClient();
+
+        var first = await GetPageAsync(client, 2);
+
+        Assert.Equal(
+            new[] { tasks[3].Id, tasks[2].Id },
+            first.Items.Select(x => x.Id).ToArray());
+
+        Assert.NotNull(first.NextCursor);
+
+        // Delete the last returned row - the row the cursor was
+        // built from. The cursor carries the timestamp and ID, so
+        // it stays valid without the underlying row.
+        var cursorTaskId = first.Items[^1].Id;
+
+        await using (var scope =
+            _fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider
+                .GetRequiredService<TasksDbContext>();
+
+            var deleted = await db.Tasks
+                .Where(x => x.Id == cursorTaskId)
+                .ExecuteDeleteAsync();
+
+            Assert.Equal(1, deleted);
+        }
+
+        var second = await GetPageAsync(
+            client,
+            2,
+            first.NextCursor);
+
+        Assert.Equal(
+            new[] { tasks[1].Id, tasks[0].Id },
+            second.Items.Select(x => x.Id).ToArray());
+
+        Assert.Null(second.NextCursor);
+    }
+
     private async Task<TaskItem[]> SeedAsync(int count)
     {
         var tasks = Enumerable.Range(0, count)
