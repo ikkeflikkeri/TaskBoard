@@ -26,12 +26,19 @@ public static class TaskEndpoints
         if (string.IsNullOrWhiteSpace(title) || title.Length > 200)
             return InvalidTitle();
 
+        var now = clock.GetUtcNow().UtcDateTime;
+
+        // Match PostgreSQL's microsecond precision: 10 ticks = 1 microsecond.
+        var createdAtUtc = new DateTime(
+            now.Ticks - (now.Ticks % 10),
+            DateTimeKind.Utc);
+
         var task = new TaskItem
         {
             Id = Guid.CreateVersion7(),
             Title = title,
             IsCompleted = false,
-            CreatedAtUtc = clock.GetUtcNow().UtcDateTime,
+            CreatedAtUtc = createdAtUtc,
             Version = 1
         };
 
@@ -65,26 +72,49 @@ public static class TaskEndpoints
     }
 
     private static async Task<IResult> List(
-        int? limit,
-        TasksDbContext db,
-        CancellationToken ct)
+    int? pageSize,
+    string? cursor,
+    TasksDbContext db,
+    CancellationToken ct)
     {
-        var pageSize = limit ?? 50;
+        var size = pageSize ?? 20;
 
-        if (pageSize is < 1 or > 100)
+        if (size is < 1 or > 100)
         {
             return Results.ValidationProblem(
                 new Dictionary<string, string[]>
                 {
-                    ["limit"] = ["Must be between 1 and 100."]
+                    ["pageSize"] = ["Must be between 1 and 100."]
                 });
         }
 
-        var results = await db.Tasks
-            .AsNoTracking()
+        var query = db.Tasks.AsNoTracking();
+
+        if (cursor is not null)
+        {
+            if (!TaskCursor.TryDecode(
+                    cursor,
+                    out var createdAtUtc,
+                    out var id))
+            {
+                return Results.ValidationProblem(
+                    new Dictionary<string, string[]>
+                    {
+                        ["cursor"] = ["Invalid pagination cursor."]
+                    });
+            }
+
+            query = query.Where(x =>
+                EF.Functions.LessThan(
+                    ValueTuple.Create(x.CreatedAtUtc, x.Id),
+                    ValueTuple.Create(createdAtUtc, id)));
+        }
+
+        // Fetch one extra row to determine whether another page exists.
+        var items = await query
             .OrderByDescending(x => x.CreatedAtUtc)
             .ThenByDescending(x => x.Id)
-            .Take(pageSize)
+            .Take(size + 1)
             .Select(x => new TaskResponse(
                 x.Id,
                 x.Title,
@@ -93,7 +123,24 @@ public static class TaskEndpoints
                 x.Version))
             .ToListAsync(ct);
 
-        return Results.Ok(results);
+        var hasMore = items.Count > size;
+
+        if (hasMore)
+            items.RemoveAt(items.Count - 1);
+
+        string? nextCursor = null;
+
+        if (hasMore)
+        {
+            var last = items[^1];
+
+            nextCursor = TaskCursor.Encode(
+                last.CreatedAtUtc,
+                last.Id);
+        }
+
+        return Results.Ok(
+            new TaskPageResponse(items, nextCursor));
     }
 
     private static async Task<IResult> Update(
@@ -176,3 +223,7 @@ public sealed record TaskResponse(
     bool IsCompleted,
     DateTime CreatedAtUtc,
     long Version);
+
+public sealed record TaskPageResponse(
+    IReadOnlyList<TaskResponse> Items,
+    string? NextCursor);
