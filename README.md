@@ -165,6 +165,11 @@ layer rejected the request.
 Successful responses are `application/json` and are unaffected by any of
 this.
 
+An error is `application/problem+json` whatever the client's `Accept` header
+says. Success responses still negotiate normally; only errors are exempt,
+because an error body in a format the client did not expect is one it cannot
+act on.
+
 ### Validation errors
 
 All 400 responses carry an `errors` map from a field name to a list of
@@ -183,14 +188,20 @@ messages, including the title a handler-produced problem uses:
 The key tells you how the request was rejected:
 
 - A **field name** such as `title`, `version`, `pageSize`, or `cursor` means
-  the envelope was read successfully and that field was invalid.
+  that parameter was rejected and the rest of the request is well-formed.
 - The key **`request`** means the body could not be deserialized at all:
   malformed JSON, an empty body, a JSON array instead of an object, or a value
   of the wrong type. No field name is given because the framework does not
   report which one it failed on.
 
-Treat `errors.request` as "the body is wrong somewhere, and here is the
-message" rather than as a pointer to one field.
+A parameter in the query string is keyed by its own name the same way one in
+the body is, so `?pageSize=abc` yields `errors.pageSize` rather than
+`errors.request`. The distinction is which value was at fault: a named field
+can be corrected on its own, while `errors.request` means the body is wrong
+somewhere and the message is all you get.
+
+Every problem body carries a `traceId`, including those produced for a request
+the framework could not bind.
 
 ### Errors that carry no detail
 

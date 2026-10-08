@@ -119,6 +119,183 @@ public sealed class TaskErrorContractTests
     }
 
     [Fact]
+    public async Task An_unreadable_envelope_keeps_its_trace_id()
+    {
+        using var client = _fixture.Factory.CreateClient();
+
+        using var content = new StringContent(
+            "not json",
+            Encoding.UTF8,
+            "application/json");
+
+        using var response = await client.PutAsync(
+            $"/api/tasks/{Guid.CreateVersion7()}",
+            content);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var root = (await ReadProblemAsync(response)).RootElement;
+
+        // The README promises a traceId on every problem body and points at
+        // it as the way to correlate a response with the log. Normalizing this
+        // 400 into a new instance must not drop the extension the default
+        // writer had already added.
+        Assert.True(
+            root.TryGetProperty("traceId", out var traceId),
+            "A binding failure lost its traceId, so it cannot be correlated "
+            + "with the log.");
+
+        Assert.False(string.IsNullOrWhiteSpace(traceId.GetString()));
+    }
+
+    [Fact]
+    public async Task A_bad_query_parameter_is_keyed_by_its_field_name()
+    {
+        using var client = _fixture.Factory.CreateClient();
+
+        // A GET with no body at all: pageSize binds as int?, so "abc" fails
+        // at the binder and produces a bare 400 with no errors map.
+        using var response = await client.GetAsync("/api/tasks/?pageSize=abc");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ProblemJson, response.Content.Headers.ContentType?.MediaType);
+
+        var errors = (await ReadProblemAsync(response))
+            .RootElement.GetProperty("errors");
+
+        // The README's rule: a field name means the request was read fine and
+        // that field was invalid. Here the field is in the query string, so
+        // the client is told exactly which parameter to fix.
+        Assert.True(
+            errors.TryGetProperty("pageSize", out var messages),
+            "A bad query parameter is not keyed by its field name, so the "
+            + "documented distinction between an invalid field and an "
+            + "unreadable envelope does not hold.");
+
+        Assert.Equal(JsonValueKind.Array, messages.ValueKind);
+
+        // There is no body here, so the message must not tell the client to
+        // send one — that is the part that is actively misleading.
+        Assert.DoesNotContain(
+            "JSON",
+            string.Join(" ", messages.EnumerateArray().Select(m => m.GetString())),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static TheoryData<string, string> UnbindableQueryValues => new()
+    {
+        { "abc", "not a number at all" },
+        { "99999999999999", "a number too large to bind" },
+        { "", "an empty value" },
+        { "%20", "a whitespace value" },
+    };
+
+    [Theory]
+    [MemberData(nameof(UnbindableQueryValues))]
+    public async Task A_query_value_the_binder_rejects_is_keyed_by_field(
+        string value,
+        string why)
+    {
+        using var client = _fixture.Factory.CreateClient();
+
+        using var response = await client.GetAsync(
+            $"/api/tasks/?pageSize={value}");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var errors = (await ReadProblemAsync(response))
+            .RootElement.GetProperty("errors");
+
+        // Each of these failed at the binder, so each is the field's fault.
+        // Falling back to errors.request here would tell a client with no
+        // body to send one.
+        Assert.True(
+            errors.TryGetProperty("pageSize", out var messages),
+            $"pageSize={value} ({why}) was not keyed by its field name.");
+    }
+
+    [Fact]
+    public async Task A_repeated_query_parameter_is_keyed_by_field()
+    {
+        using var client = _fixture.Factory.CreateClient();
+
+        // pageSize is a single int?, not a collection, so two values have no
+        // one value to bind.
+        using var response = await client.GetAsync(
+            "/api/tasks/?pageSize=2&pageSize=3");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var errors = (await ReadProblemAsync(response))
+            .RootElement.GetProperty("errors");
+
+        Assert.True(
+            errors.TryGetProperty("pageSize", out var messages),
+            "A repeated scalar parameter is a field error, not an unreadable "
+            + "body.");
+
+        // The message has to name the cause; "send a JSON object" would be
+        // nonsense for a query string.
+        Assert.Contains(
+            "once",
+            string.Join(
+                " ", messages.EnumerateArray().Select(m => m.GetString())),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task A_query_value_the_handler_rejects_keeps_its_own_message()
+    {
+        using var client = _fixture.Factory.CreateClient();
+
+        // -1 binds successfully as an int, so this is handler validation and
+        // must keep the handler's wording rather than the binder's.
+        using var response = await client.GetAsync(
+            "/api/tasks/?pageSize=-1");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var messages = (await ReadProblemAsync(response))
+            .RootElement.GetProperty("errors").GetProperty("pageSize");
+
+        Assert.Contains(
+            "between 1 and 100",
+            string.Join(
+                " ", messages.EnumerateArray().Select(m => m.GetString())),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("text/html")]
+    [InlineData("*/*;q=0.8, text/html")]
+    [InlineData("application/xml")]
+    public async Task An_error_is_problem_json_whatever_the_client_accepts(
+        string accept)
+    {
+        using var client = _fixture.Factory.CreateClient();
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get, "/api/tasks/this-path-does-not-exist");
+
+        request.Headers.TryAddWithoutValidation("Accept", accept);
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+
+        // The README promises application/problem+json for every error. The
+        // framework's own writer declines when Accept excludes that media
+        // type and the status-code pages fall back to plain text, which would
+        // hand the client a body it cannot parse with the documented code
+        // path.
+        Assert.Equal(ProblemJson, response.Content.Headers.ContentType?.MediaType);
+
+        var problem = await ReadProblemAsync(response);
+
+        Assert.Equal(404, problem.RootElement.GetProperty("status").GetInt32());
+    }
+
+    [Fact]
     public async Task Both_rejection_layers_produce_the_same_envelope()
     {
         using var client = _fixture.Factory.CreateClient();
