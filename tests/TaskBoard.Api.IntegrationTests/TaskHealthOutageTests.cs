@@ -27,8 +27,7 @@ public sealed class TaskHealthOutageTests
             CommandTimeout = 2
         }.ConnectionString;
 
-        await using var factory =
-            new TaskBoardFactory(connectionString);
+        await using var factory = TaskBoardFactory.Start(connectionString);
 
         using var client = factory.CreateClient();
 

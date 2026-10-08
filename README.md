@@ -104,6 +104,49 @@ with `Healthy`.
 Readiness does not verify that migrations have been applied or that
 the task schema exists.
 
+## Required configuration
+
+`ConnectionStrings:Tasks` is required. The API validates it at startup and
+refuses to boot without it, so a misconfigured deployment fails immediately
+instead of on the first request that touches the database.
+
+Supply it either in configuration:
+
+```json
+{
+  "ConnectionStrings": {
+    "Tasks": "Host=127.0.0.1;Port=54320;Database=taskboard;Username=taskboard_dev;Password=..."
+  }
+}
+```
+
+or with the `ConnectionStrings__Tasks` environment variable, as shown in
+the local setup above.
+
+A value is accepted when Npgsql can parse it and it names both a host (or a
+Unix socket path) and a database. Both requirements are checked because
+Npgsql would otherwise fall back to the OS user and the local socket, which
+connects to the wrong database rather than failing.
+
+Failure messages name the configuration key and the environment-variable
+form. They never include the connection string itself, including when the
+value is present but malformed, because a connection string carries a
+password.
+
+### Misconfigured versus unavailable
+
+These are separate failures and the API keeps them separate:
+
+| Condition | Behaviour |
+|---|---|
+| Missing or unusable connection string | Process exits during startup |
+| Correct connection string, database down | Process starts; `/health/ready` returns 503, `/health/live` returns 200 |
+
+Startup validation only inspects the configuration text. It never opens a
+connection, so a database that is merely unreachable cannot crash the
+process. Use `/health/live` as the liveness signal and `/health/ready` as
+the readiness signal.
+
 ## Build and test
 
 ```powershell
