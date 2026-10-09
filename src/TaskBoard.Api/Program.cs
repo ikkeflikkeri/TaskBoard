@@ -1,4 +1,7 @@
+using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Npgsql;
@@ -9,10 +12,6 @@ using TaskBoard.Api.Health;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Fail fast on a missing or unusable connection string. This checks only
-// that the configuration text is present and well-formed; it never opens a
-// connection, so an unreachable database still reaches the readiness
-// check instead of crashing the process at boot.
 if (!TasksConnectionString.TryResolve(
         builder.Configuration,
         out var tasksConnectionString,
@@ -21,7 +20,36 @@ if (!TasksConnectionString.TryResolve(
     throw new InvalidOperationException(configurationError);
 }
 
-builder.Services.AddProblemDetails();
+const string ValidationProblemTitle =
+    "One or more validation errors occurred.";
+
+builder.Services.Configure<RouteHandlerOptions>(options =>
+    options.ThrowOnBadRequest = false);
+builder.Services.AddSingleton<IProblemDetailsWriter, ApiProblemDetailsWriter>();
+builder.Services.AddProblemDetails(options =>
+    options.CustomizeProblemDetails = context =>
+    {
+        var problem = context.ProblemDetails;
+
+        if (problem.Status is StatusCodes.Status400BadRequest
+            && problem is not HttpValidationProblemDetails)
+        {
+            context.ProblemDetails = new HttpValidationProblemDetails(
+                BindingFailureErrors.From(context.HttpContext))
+            {
+                Status = problem.Status,
+
+                Title = ValidationProblemTitle,
+                Type = problem.Type,
+                Detail = problem.Detail,
+                Instance = problem.Instance,
+
+                Extensions = new Dictionary<string, object?>(
+                    problem.Extensions,
+                    StringComparer.Ordinal)
+            };
+        }
+    });
 builder.Services.AddHealthChecks()
     .AddCheck<TasksDatabaseHealthCheck>(
         "tasks-database",
@@ -43,11 +71,11 @@ var app = builder.Build();
 
 app.UseExceptionHandler();
 
+app.UseStatusCodePages();
+
 app.MapTaskEndpoints();
 app.MapHealthChecks("/health/live", new HealthCheckOptions
 {
-    // Liveness must stay independent of PostgreSQL, so no check
-    // is selected here.
     Predicate = _ => false
 });
 

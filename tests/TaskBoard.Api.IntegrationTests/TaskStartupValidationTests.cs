@@ -17,11 +17,8 @@ namespace TaskBoard.Api.IntegrationTests;
 /// </remarks>
 public sealed class TaskStartupValidationTests
 {
-    // Port 1 on the loopback interface. Nothing listens there, so an
-    // accidental connection attempt fails instead of reaching a real
-    // database.
     private const string ConfiguredButUnreachable =
-        "Host=127.0.0.1;Port=1;Database=taskboard;Username=taskboard";
+        UnreachableDatabase.ConnectionString;
 
     [Fact]
     public void Valid_configuration_builds_the_host()

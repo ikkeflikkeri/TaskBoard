@@ -13,6 +13,22 @@ using Xunit;
 namespace TaskBoard.Api.IntegrationTests;
 
 /// <summary>
+/// A syntactically valid connection string naming nothing that listens.
+/// </summary>
+/// <remarks>
+/// Port 1 on the loopback interface. Nothing listens there, so an accidental
+/// connection attempt fails instead of reaching a real database. Several
+/// fixtures need a host that builds without a reachable database, so the
+/// value lives beside <see cref="ConnectionStringEnvironmentScope"/> — the
+/// thing that publishes it — rather than in whichever test needed it first.
+/// </remarks>
+internal static class UnreachableDatabase
+{
+    public const string ConnectionString =
+        "Host=127.0.0.1;Port=1;Database=taskboard;Username=taskboard";
+}
+
+/// <summary>
 /// Publishes a connection string to the process environment for as long as
 /// it is held, restoring the previous value on dispose.
 /// </summary>
@@ -61,6 +77,29 @@ public sealed class ConnectionStringEnvironmentScope : IDisposable
         }
     }
 
+    /// <summary>
+    /// Publishes <paramref name="connectionString"/>, builds
+    /// <typeparamref name="TFactory"/>, and starts it before the scope is
+    /// released.
+    /// </summary>
+    /// <remarks>
+    /// Every entry point that needs a started host goes through here, so the
+    /// connection string is guaranteed to be in place for exactly the window
+    /// during which Program.cs reads it, and no factory can forget to.
+    /// </remarks>
+    public static TFactory StartHost<TFactory>(string connectionString)
+        where TFactory : WebApplicationFactory<Program>, new()
+    {
+        using var scope = Apply(connectionString);
+
+        var factory = new TFactory();
+
+        // Forces the host to finish starting while the scope is held.
+        _ = factory.Services;
+
+        return factory;
+    }
+
     public void Dispose()
     {
         if (_released)
@@ -99,18 +138,9 @@ public sealed class TaskBoardFactory : WebApplicationFactory<Program>
     /// Builds a started host with <paramref name="connectionString"/>
     /// published to configuration.
     /// </summary>
-    public static TaskBoardFactory Start(string connectionString)
-    {
-        using var configuration =
-            ConnectionStringEnvironmentScope.Apply(connectionString);
-
-        var factory = new TaskBoardFactory();
-
-        // Forces the host to finish starting while the scope is held.
-        _ = factory.Services;
-
-        return factory;
-    }
+    public static TaskBoardFactory Start(string connectionString) =>
+        ConnectionStringEnvironmentScope
+            .StartHost<TaskBoardFactory>(connectionString);
 
     /// <summary>
     /// Builds a started host whose startup fails because of
