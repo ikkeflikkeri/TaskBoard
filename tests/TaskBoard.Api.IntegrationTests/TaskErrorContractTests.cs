@@ -100,6 +100,48 @@ public sealed class TaskErrorContractTests
         Assert.True(messages.GetArrayLength() > 0);
     }
 
+    [Theory]
+    [InlineData("/api/tasks/", "not json", "request")]
+    [InlineData("/api/tasks/?pageSize=abc", null, "pageSize")]
+    public async Task A_binding_failure_in_development_is_a_validation_problem(
+        string path,
+        string? body,
+        string field)
+    {
+        using var factory = ThrowingEndpointFactory.Start();
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(
+            body is null ? HttpMethod.Get : HttpMethod.Post,
+            path);
+
+        request.Headers.TryAddWithoutValidation("Accept", "text/html");
+
+        if (body is not null)
+        {
+            request.Content = new StringContent(
+                body,
+                Encoding.UTF8,
+                "application/json");
+        }
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ProblemJson, response.Content.Headers.ContentType?.MediaType);
+
+        using var problem = await ReadProblemAsync(response);
+        var root = problem.RootElement;
+
+        Assert.Equal(400, root.GetProperty("status").GetInt32());
+        Assert.Equal(
+            "One or more validation errors occurred.",
+            root.GetProperty("title").GetString());
+        Assert.NotEmpty(root.GetProperty("errors").GetProperty(field).EnumerateArray());
+        Assert.False(string.IsNullOrWhiteSpace(
+            root.GetProperty("traceId").GetString()));
+    }
+
     [Fact]
     public async Task An_unreadable_envelope_keeps_its_trace_id()
     {

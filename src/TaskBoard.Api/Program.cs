@@ -23,6 +23,8 @@ if (!TasksConnectionString.TryResolve(
 const string ValidationProblemTitle =
     "One or more validation errors occurred.";
 
+builder.Services.Configure<RouteHandlerOptions>(options =>
+    options.ThrowOnBadRequest = false);
 builder.Services.AddSingleton<IProblemDetailsWriter, ApiProblemDetailsWriter>();
 builder.Services.AddProblemDetails(options =>
     options.CustomizeProblemDetails = context =>
